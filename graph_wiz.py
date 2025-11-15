@@ -196,6 +196,45 @@ def normalize_dep_name(dep: str) -> str:
     dep = re.split(r'[<>=!~]', dep)[0]
     return dep.strip()
 
+def colllect_direct_dependencies(repo_path: str) -> Set[str]:
+    candidates = [
+        os.path.json(repo_path,dir, 'pyproject.toml'),
+        os.path.join(repo_path, 'setup.cfg'),
+        os.path.join(repo_path, 'setup.py'),
+        os.path.join(repo_path, 'requirements.txt'),
+    ]
+    deps: list
+    found_any = False
+    if os.path.isfile(candidates[0]):
+        found_any = True
+        deps.extend(parse_pyproject_toml(candidates[0]))
+    if os.path.isfile(candidates[1]):
+        found_any = True
+        deps.extend(parse_setup_cfg(candidates[1])) 
+    if os.path.isfile(candidates[2]):
+        found_any = True
+        deps.extend(parse_setup_py(candidates[2]))
+    if os.path.isfile(candidates[3]):
+        found_any = True
+        deps.extend(parse_requirements_file(candidates[3]))
+    if not found_any:
+        for root, dirs, _, files in os.walk(repo_path):
+            for file in files:
+                if file.lower() in ('requirements.txt', 'setup.cfg', 'setup.py', 'pyproject.toml'):
+                    file_path = os.path.join(root, file)
+                    if file.lower() == 'requirements.txt':
+                        deps.extend(parse_requirements_file(file_path))
+                    elif file.lower() == 'setup.cfg':
+                        deps.extend(parse_setup_cfg(file_path))
+                    elif file.lower() == 'setup.py':
+                        deps.extend(parse_setup_py(file_path))
+                    elif file.lower() == 'pyproject.toml':
+                        deps.extend(parse_pyproject_toml(file_path))
+    normalized_deps = {normalize_dep_name(d) for d in deps if normalize_dep_name(d)}
+    normalized_deps.discard('')
+    return normalized_deps
+            
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Dependency graph visualizer (minimal prototype - stage 1)")
     p.add_argument('-p', '--package-name', required=True, type=validate_package_name,
@@ -216,33 +255,45 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     parser = build_parser()
-    try:
-        args = parser.parse_args(argv)
-    except argparse.ArgumentError as ae:
-        error(str(ae))
-    except SystemExit as se:
-        raise
+    args = parser.parse_args(argv)
 
-    print("Received parameters:")
+    print('Received parameters:')
     for k, v in sorted(vars(args).items()):
         print(f"{k}: {v}")
-
     if args.repo_mode == 'local' and not os.path.isdir(args.repo):
-        error(f"repo-mode 'local' requires that --repo points to a directory: {args.repo}")
-    if args.repo_mode in ('git', 'http'):
+        error(f"Local repo mode specified, but repo path is not a directory: {args.repo}")
+    if args.repo_mode in ('auto', 'git', 'http'):
         parsed = urlparse(args.repo)
-        if parsed.scheme not in ('http', 'https', 'git', 'ssh'):
-            error(f"repo-mode '{args.repo_mode}' requires a URL --repo (got: {args.repo})")
-
-    if args.verbose:
-        print('\n[DEBUG] Parameters validated successfully. Ready to analyze (not implemented in stage 1).')
+        is_url = parsed.scheme in ('http', 'https', 'git', 'ssh')
+        if is_url and not has_git():
+            error("Git is required to clone remote repositories, but it is not installed or not found in PATH")
+    try:
+        repo_path = prepare_repo(args.repo, args.repo_mode, args.version)
+    except Exception as e:
+        error(f"Failed to prepare repository: {e}")
+    try:
+        direct_deps = colllect_direct_dependencies(repo_path)
+    except Exception as e:
+        shutil.rmtree(repo_path, ignore_errors=True)
+        error(f"Failed to collect dependencies: {e}")
+    
+    try:
+        shutil.rmtree(repo_path, ignore_errors=True)
+    except Exception:
+        pass
+    if direct_deps:
+        print(f"Direct dependencies of package '{args.package_name}':")
+        for dep in sorted(direct_deps):
+            if args.filter and args.filter not in dep:
+                continue
+            print(f" - {dep}")
     else:
-        print('\nParameters validated successfully.')
+        print(f"No direct dependencies found for package '{args.package_name}'")
     return 0
 
 if __name__ == '__main__':
     try:
         rc = main()
         sys.exit(rc)
-    except Exception as exc:
-        error(str(exc))
+    except Exception as e:
+        error(str(e))
