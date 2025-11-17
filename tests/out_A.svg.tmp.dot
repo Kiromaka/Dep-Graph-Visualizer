@@ -1,0 +1,13 @@
+digraph G {
+  node [shape=box, style=filled, color=lightgrey];
+  "A" [color=lightblue, style=filled];
+  "B";
+  "C";
+  "D";
+  "E";
+  "A" -> "B";
+  "A" -> "C";
+  "B" -> "C";
+  "B" -> "D";
+  "C" -> "E";
+}

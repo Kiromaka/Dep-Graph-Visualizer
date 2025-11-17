@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 from typing import List, Set, Dict, Tuple
 from urllib.parse import urlparse
 
@@ -402,6 +403,60 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def generate_dot(nodes: Set[str], edges: Set[Tuple[str, str]], start: str) -> str:
+    lines = []
+    lines.append("digraph G {")
+    lines.append('  node [shape=box, style=filled, color=lightgrey];')
+    if start in nodes:
+        lines.append(f'  "{start}" [color=lightblue, style=filled];')
+    for n in sorted(nodes):
+        if n == start:
+            continue
+        lines.append(f'  "{n}";')
+    for src, dst in sorted(edges):
+        lines.append(f'  "{src}" -> "{dst}";')
+    lines.append("}")
+    return "\n".join(lines)
+
+def render_svg(dot_text: str, svg_path: str) -> None:
+    base = os.path.splitext(svg_path)[0]
+    dot_path = base + ".tmp.dot"
+    out_dir = os.path.dirname(os.path.abspath(dot_path)) or "."
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=out_dir, delete=False, suffix=".dot", prefix="tmp_") as tf:
+            tf.write(dot_text)
+            tf.flush()
+            temp_name = tf.name
+
+        try:
+            os.replace(temp_name, dot_path)
+        except Exception:
+            try:
+                os.remove(dot_path)
+            except Exception:
+                pass
+            os.replace(temp_name, dot_path)
+
+        try:
+            subprocess.run(["dot", "-Tsvg", dot_path, "-o", svg_path], check=True)
+            try:
+                os.remove(dot_path)
+            except Exception:
+                pass
+            print(f"SVG graph generated at: {svg_path}")
+        except FileNotFoundError:
+            print(f"Graphviz 'dot' not found, try downloading at https://graphviz.org/download/; DOT file saved at: {dot_path}")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to render SVG with dot: {e}", file=sys.stderr)
+            print(f"DOT file is available at: {dot_path}")
+    except Exception as e:
+        print(f"Failed to write DOT file: {e}", file=sys.stderr)
+
+
+
 
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
@@ -432,6 +487,11 @@ def main(argv: list[str] | None = None) -> int:
                 edges_all.add((u, v))
         nodes, edges, cycles = build_graph_from_test(start, test_graph, args.filter)
     print_graph_result(start, nodes, edges, cycles, args.filter)
+
+    svg_path = os.path.splitext(args.output)[0] + ".svg"
+    dot_text = generate_dot(nodes, edges, start)
+    render_svg(dot_text, svg_path)
+
     if args.reverse_target:
         source_edges = edges_all if args.test_file else edges
         reverse_set = find_reverse_dependencies(args.reverse_target, source_edges, extra_nodes=(nodes_all if args.test_file else None))
