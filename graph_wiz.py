@@ -369,6 +369,25 @@ def print_graph_result(start: str, nodes: Set[str], edges: Set[Tuple[str, str]],
     else:
         print("No cycles detected.")
 
+def find_reverse_dependencies(target: str, edges: Set[Tuple[str, str]], extra_nodes: Set[str] | None = None) -> Set[str]:
+    reverse_graph: Dict[str, Set[str]] = {}
+    for a, b in edges:
+        reverse_graph.setdefault(b, set()).add(a)
+        reverse_graph.setdefault(a, set())
+    if extra_nodes:
+        for n in extra_nodes:
+            reverse_graph.setdefault(n, set())
+    visited: Set[str] = set()
+    def dfs(u: str):
+        for v in sorted(reverse_graph.get(u, set())):
+            if v in visited:
+                continue
+            visited.add(v)
+            dfs(v)
+    dfs(target)
+    visited.discard(target)
+    return visited
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Dependency graph visualizer (stage 3)")
     p.add_argument("-p", "--package-name", required=True, type=validate_package_name, help="Name of the package to analyze (required)")
@@ -378,6 +397,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-v", "--version", default="latest", type=validate_version, help="Package version to analyze (semver or 'latest'). Default: latest")
     p.add_argument("-o", "--output", default="dep_graph.png", type=validate_output, help="Generated image filename (.png, .svg). Default: dep_graph.png")
     p.add_argument("-f", "--filter", default="", type=validate_filter, help="Substring to filter packages by name (optional)")
+    p.add_argument("--reverse", dest="reverse_target", required=False, type = str, help = "Show reverse dependencies for the specified package")
     p.add_argument("--verbose", action="store_true", help="Verbose mode (prints extra diagnostics)")
     return p
 
@@ -392,37 +412,43 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{k}: {v}")
     if not args.test_file and not args.repo:
         error("Either --repo or --test-file must be specified")
+    repo_path = None
     if args.test_file:
         try:
             test_graph = load_test_graph(args.test_file)
         except Exception as e:
             error(f"Failed to load test graph: {e}")
         start = args.package_name
+        edges_all: Set[Tuple[str, str]] = set()
+        nodes_all: Set[str] = set()
+        for u, vs in test_graph.items():
+            if args.filter and args.filter in u:
+                continue
+            nodes_all.add(u)
+            for v in vs:
+                if args.filter and args.filter in v:
+                    continue
+                nodes_all.add(v)
+                edges_all.add((u, v))
         nodes, edges, cycles = build_graph_from_test(start, test_graph, args.filter)
-        print_graph_result(start, nodes, edges, cycles, args.filter)
-        return 0
-    if args.repo_mode == "local" and not os.path.isdir(args.repo):
-        error(f"Local repo mode specified, but repo path is not a directory: {args.repo}")
-    if args.repo_mode in ("auto", "git", "http"):
-        if is_remote_repo_like(args.repo) and not has_git():
-            error("Git is required to clone remote repositories, but it is not installed or not found in PATH")
-    try:
-        repo_path = prepare_repo(args.repo, args.repo_mode, args.version)
-    except Exception as e:
-        error(f"Failed to prepare repository: {e}")
-    try:
-        direct_deps = collect_direct_dependencies(repo_path)
-    except Exception as e:
-        shutil.rmtree(repo_path, ignore_errors=True)
-        error(f"Failed to collect dependencies: {e}")
-    try:
-        shutil.rmtree(repo_path, ignore_errors=True)
-    except Exception:
-        pass
-    start = args.package_name
-    nodes, edges, cycles = build_graph_from_repo(start, direct_deps, args.filter)
     print_graph_result(start, nodes, edges, cycles, args.filter)
+    if args.reverse_target:
+        source_edges = edges_all if args.test_file else edges
+        reverse_set = find_reverse_dependencies(args.reverse_target, source_edges, extra_nodes=(nodes_all if args.test_file else None))
+        print()
+        print(f"Packages depending on '{args.reverse_target}':")
+        if reverse_set:
+            for n in sorted(reverse_set):
+                print(f" - {n}")
+        else:
+            print(" None")
+    if repo_path:
+        try:
+            shutil.rmtree(repo_path, ignore_errors=True)
+        except Exception:
+            pass
     return 0
+
 
 
 if __name__ == "__main__":
