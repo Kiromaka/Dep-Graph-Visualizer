@@ -390,7 +390,7 @@ def find_reverse_dependencies(target: str, edges: Set[Tuple[str, str]], extra_no
     return visited
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Dependency graph visualizer (stage 3)")
+    p = argparse.ArgumentParser(description="Dependency graph visualizer")
     p.add_argument("-p", "--package-name", required=True, type=validate_package_name, help="Name of the package to analyze (required)")
     p.add_argument("-r", "--repo", required=False, type=validate_repo, help="Repository URL or path to test repository (optional when --test-file is used)")
     p.add_argument("--test-file", required=False, type=str, help="Path to test graph file (optional)")
