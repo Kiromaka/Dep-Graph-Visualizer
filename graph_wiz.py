@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import List, Set
+from typing import List, Set, Dict, Tuple
 from urllib.parse import urlparse
 
 SEMVER_RE = re.compile(
@@ -272,71 +272,156 @@ def collect_direct_dependencies(repo_path: str) -> Set[str]:
     normalized_deps.discard("")
     return normalized_deps
 
+def load_test_graph(path: str) -> Dict[str, Set[str]]:
+    if not os.path.isfile(path):
+        raise RuntimeError(f"Test graph file does not exist: {path}")
+    graph: Dict[str, Set[str]] = {}
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ':' in line:
+                left, right = line.split(":", 1)
+                node = left.strip()
+                deps = [p.strip() for p in re.split(r"[,\s]+", right.strip()) if p.strip()]
+                graph[node] = set(deps)
+            elif "->" in line:
+                left, right = line.split("->", 1)
+                node = left.strip()
+                deps = [p.strip() for p in re.split(r"[,\s]+", right.strip()) if p.strip()]
+                graph[node] = set(deps)
+            else:
+                node = line.strip()
+                graph[node] = set()
+    return graph
+
+def build_graph_from_test(start: str, graph: Dict[str, Set[str]], ignore_substr: str) -> Tuple[Set[str], Set[Tuple[str, str]], List[List[str]]]:
+    visited: Set[str] = set()
+    onstack: Set[str] = set()
+    edges: Set[Tuple[str, str]] = set()
+    cycles: List[List[str]] = []
+    path_stack: List[str] = []
+
+    def dfs(u: str):
+        if ignore_substr and ignore_substr in u:
+            return
+        if u in path_stack:  # если уже в текущем пути — цикл
+            idx = path_stack.index(u)
+            cycles.append(path_stack[idx:] + [u])
+            return
+        if u in visited:
+            return
+        visited.add(u)
+        path_stack.append(u)
+        for v in sorted(graph.get(u, set())):
+            if ignore_substr and ignore_substr in v:
+                continue
+            edges.add((u, v))
+            dfs(v)
+        path_stack.pop()
+    dfs(start)
+    return visited, edges, cycles
+
+def build_graph_from_repo(start: str, direct_deps: Set[str], repo_path: str, ignore_substr: str) -> Tuple[Set[str], Set[Tuple[str, str]], List[List[str]]]:
+    graph: Dict[str, Set[str]] = {start: set(d for d in direct_deps if not (ignore_substr and ignore_substr in d))}
+    visited: Set[str] = set()
+    onstack: Set[str] = set()
+    edges: Set[Tuple[str, str]] = set()
+    cycles: List[List[str]] = []
+    path_stack: List[str] = []
+
+    def dfs(u: str):
+        if ignore_substr and ignore_substr in u:
+            return
+        if u in path_stack:  # если уже в текущем пути — цикл
+            idx = path_stack.index(u)
+            cycles.append(path_stack[idx:] + [u])
+            return
+        if u in visited:
+            return
+        visited.add(u)
+        path_stack.append(u)
+        for v in sorted(graph.get(u, set())):
+            if ignore_substr and ignore_substr in v:
+                continue
+            edges.add((u, v))
+            dfs(v)
+        path_stack.pop()
+
+    dfs(start)
+    return visited, edges, cycles
+
+def print_graph_result(start: str, nodes: Set[str], edges: Set[Tuple[str, str]], cycles: List[List[str]], ignore_substr: str):
+    print(f"Dependency graph starting from '{start}':")
+    if ignore_substr:
+        print(f"(ignoring packages containing substring '{ignore_substr}')")
+    print(f"Total nodes: {len(nodes)}")
+    for node in sorted(nodes):
+        print(f" - {node}")
+    print(f"Total edges: {len(edges)}")
+    for src, dst in sorted(edges):
+        print(f" {src} -> {dst}")
+    if cycles:
+        print(f"Detected {len(cycles)} cycles:")
+        for cycle in cycles:
+            print(" -> ".join(cycle))
+    else:
+        print("No cycles detected.")
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Dependency graph visualizer (minimal prototype - stage 1)")
-    p.add_argument(
-        "-p", "--package-name", required=True, type=validate_package_name,
-        help="Name of the package to analyze (required)")
-    p.add_argument(
-        "-r", "--repo", required=True, type=validate_repo,
-        help="Repository URL or path to test repository (required)")
-    p.add_argument(
-        "-m", "--repo-mode", default="auto", type=validate_repo_mode,
-        help=f"Mode of working with test repo. One of: {', '.join(sorted(REPO_MODES))}. Default: auto")
-    p.add_argument(
-        "-v", "--version", default="latest", type=validate_version,
-        help="Package version to analyze (semver or 'latest'). Default: latest")
-    p.add_argument(
-        "-o", "--output", default="dep_graph.png", type=validate_output,
-        help="Generated image filename (.png, .svg). Default: dep_graph.png")
-    p.add_argument(
-        "-f", "--filter", default="", type=validate_filter,
-        help="Substring to filter packages by name (optional)")
+    p = argparse.ArgumentParser(description="Dependency graph visualizer (stage 3)")
+    p.add_argument("-p", "--package-name", required=True, type=validate_package_name, help="Name of the package to analyze (required)")
+    p.add_argument("-r", "--repo", required=False, type=validate_repo, help="Repository URL or path to test repository (optional when --test-file is used)")
+    p.add_argument("--test-file", required=False, type=str, help="Path to test graph file (optional)")
+    p.add_argument("-m", "--repo-mode", default="auto", type=validate_repo_mode, help=f"Mode of working with test repo. One of: {', '.join(sorted(REPO_MODES))}. Default: auto")
+    p.add_argument("-v", "--version", default="latest", type=validate_version, help="Package version to analyze (semver or 'latest'). Default: latest")
+    p.add_argument("-o", "--output", default="dep_graph.png", type=validate_output, help="Generated image filename (.png, .svg). Default: dep_graph.png")
+    p.add_argument("-f", "--filter", default="", type=validate_filter, help="Substring to filter packages by name (optional)")
     p.add_argument("--verbose", action="store_true", help="Verbose mode (prints extra diagnostics)")
     return p
+
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     parser = build_parser()
     args = parser.parse_args(argv)
-
     print("Received parameters:")
     for k, v in sorted(vars(args).items()):
         print(f"{k}: {v}")
-
+    if not args.test_file and not args.repo:
+        error("Either --repo or --test-file must be specified")
+    if args.test_file:
+        try:
+            test_graph = load_test_graph(args.test_file)
+        except Exception as e:
+            error(f"Failed to load test graph: {e}")
+        start = args.package_name
+        nodes, edges, cycles = build_graph_from_test(start, test_graph, args.filter)
+        print_graph_result(start, nodes, edges, cycles, args.filter)
+        return 0
     if args.repo_mode == "local" and not os.path.isdir(args.repo):
         error(f"Local repo mode specified, but repo path is not a directory: {args.repo}")
-
     if args.repo_mode in ("auto", "git", "http"):
         if is_remote_repo_like(args.repo) and not has_git():
             error("Git is required to clone remote repositories, but it is not installed or not found in PATH")
-
     try:
         repo_path = prepare_repo(args.repo, args.repo_mode, args.version)
     except Exception as e:
         error(f"Failed to prepare repository: {e}")
-
     try:
         direct_deps = collect_direct_dependencies(repo_path)
     except Exception as e:
         shutil.rmtree(repo_path, ignore_errors=True)
         error(f"Failed to collect dependencies: {e}")
-
     try:
         shutil.rmtree(repo_path, ignore_errors=True)
     except Exception:
         pass
-
-    if direct_deps:
-        print(f"Direct dependencies of package '{args.package_name}':")
-        for dep in sorted(direct_deps):
-            if args.filter and args.filter not in dep:
-                continue
-            print(f" - {dep}")
-    else:
-        print(f"No direct dependencies found for package '{args.package_name}'")
+    start = args.package_name
+    nodes, edges, cycles = build_graph_from_repo(start, direct_deps, args.filter)
+    print_graph_result(start, nodes, edges, cycles, args.filter)
     return 0
 
 
