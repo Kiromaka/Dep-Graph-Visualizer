@@ -1,4 +1,6 @@
   **Dependency graph visualizer**
+
+  CLI Визуализатор графоф зависимости.
    
   "-p" "--package-name" "Name of the package to analyze (required)"
   
@@ -14,6 +16,6 @@
   
   "-f" "--filter" "Substring to filter packages by name (optional)"
   
-  "--reverse" "Show reverse dependencies for the specified package"
+  example : python graph_wiz numpy github.com/numpy выведет адрес пакета. 
   
-  "--verbose" "Verbose mode (prints extra diagnostics)"
+ 
