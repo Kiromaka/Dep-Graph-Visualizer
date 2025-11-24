@@ -1,6 +1,8 @@
-  **Dependency graph visualizer**
+  # **Dependency graph visualizer**
 
-  CLI Визуализатор графоф зависимости.
+  # CLI Визуализатор графоф зависимости.
+
+  На данный момент функции - парсинг аргументов и обработка ошибок с ожидаемым входом адреса репозитории.
    
   "-p" "--package-name" "Name of the package to analyze (required)"
   
